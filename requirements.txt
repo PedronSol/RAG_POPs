@@ -1,0 +1,10 @@
+langchain
+langchain-community
+langchain-openai
+langchain-google-genai
+faiss-cpu
+docx2txt
+rank-bm25
+langchain-classic
+dotenv
+chainlit

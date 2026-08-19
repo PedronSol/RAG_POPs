@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+Arquivos_POPs
+faiss_pops_google
+.env
