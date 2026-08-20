@@ -1,7 +1,7 @@
 langchain
 langchain-community
 langchain-openai
-langchain-google-genai
+langchain-ollama
 faiss-cpu
 docx2txt
 rank-bm25

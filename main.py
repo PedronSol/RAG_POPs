@@ -1,9 +1,7 @@
 import os
-from dotenv import load_dotenv
 from typing import List
 from pathlib import Path
 
-from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import DirectoryLoader, Docx2txtLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -12,25 +10,20 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.runnables import RunnablePassthrough
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.documents import Document
 
-load_dotenv()
-
-groq_api_key = os.getenv("GROQ_API_KEY")
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-
-llm_model = ChatOpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=groq_api_key,
-    model="openai/gpt-oss-20b",
-    temperature=0.0
+llm_model = ChatOllama(
+    base_url="http://localhost:11434",
+    model="qwen2.5:1.5b",
+    temperature=0.0,
+    num_ctx=2048,
+    num_gpu=99
 )
 
-embeddings_model = GoogleGenerativeAIEmbeddings(
-    model="gemini-embedding-2",
-    google_api_key=gemini_api_key,
-    task_type="retrieval_document"
+embeddings_model = OllamaEmbeddings(
+    model="bge-m3",
+    base_url="http://localhost:11434"
 )
 
 arquivos = DirectoryLoader(
@@ -43,8 +36,8 @@ documentos = arquivos.load()
 
 def obter_criar_FAISS(
     chunks: List[Document],
-    embeddings: GoogleGenerativeAIEmbeddings,
-    caminho_indice: str = ".faiss_pop_google",
+    embeddings: OllamaEmbeddings,
+    caminho_indice: str = ".faiss_pop_ollama",
     forcar_reindexacao: bool = False
 ) -> FAISS:
   index_path = Path(caminho_indice)
@@ -61,22 +54,22 @@ def obter_criar_FAISS(
   return vector_store
 
 chunks = RecursiveCharacterTextSplitter(
-  chunk_size=1200,
-  chunk_overlap=200,
+  chunk_size=800,
+  chunk_overlap=100,
   separators=["\n\n", "\n", " ", ""]
 ).split_documents(documentos)
 
 vector_store = obter_criar_FAISS(
   chunks = chunks,
   embeddings = embeddings_model,
-  caminho_indice="./faiss_pops_google",
+  caminho_indice="./faiss_pops_ollama",
   forcar_reindexacao=False
 )
 
-dense_retriever = vector_store.as_retriever(search_kwargs={"k":4})
+dense_retriever = vector_store.as_retriever(search_kwargs={"k":3})
 
 bm25_retriever = BM25Retriever.from_documents(chunks)
-bm25_retriever.k = 4
+bm25_retriever.k = 3
 
 hybrid_retriever = EnsembleRetriever(
     retrievers=[bm25_retriever, dense_retriever],
@@ -91,12 +84,13 @@ def formatar_documentos(docs):
   return "\n\n---\n\n".join(formatted)
 
 template = """Você é um assistente técnico especializado nos Procedimentos Operacionais Padrão (POPs) do Hospital Rio Grande.
+Responda APENAS com base no contexto fornecido. Caso não encontre a resposta, responda apenas com 'Esta informação não conta nos POPs'.
 
-Diretrizes obrigatórias:
-1. Responda à pergunta do usuário baseando-se estritamente nas informações fornecidas no Contexto.
-2. Se a informação necessária não estiver explícita no contexto, declare claramente: "Não encontrei essa informação nos POPs disponibilizados." Não tente deduzir ou utilizar conhecimentos externos.
-3. Sempre cite o documento de origem (conforme indicado em [Fonte: ...]) ao final de cada instrução.
-4. Mantenha os caminhos de rede, diretórios e parâmetros exatamente como descritos.
+--- EXEMPLO ---
+Contexto: [Fonte: POP.TI.001] Para resetar a senha, acesse o painel e clique em 'Esqueci Senha'
+Pergunta: Como altero minha senha?
+Resposta: Acesse o painel e selecione 'Esqueci Senha'. [Fonte: POP.TI.001]
+---------------
 
 Contexto:
 {context}
@@ -104,7 +98,7 @@ Contexto:
 Pergunta:
 {question}
 
-Resposta Técnica:"""
+Resposta:"""
 
 prompt = ChatPromptTemplate.from_template(template)
 
@@ -118,5 +112,5 @@ rag_chain = (
     | StrOutputParser()
 )
 
-resposta = rag_chain.invoke("Estou com uma mensagem de erro em vermelho no eSocial ao tentar acessar o Fortes AC. O que fazer?")
-print(resposta)
+for chunk in rag_chain.stream("Estou com uma mensagem de erro em vermelho no eSocial ao tentar acessar o Fortes AC. O que fazer?"):
+  print(chunk, end="", flush=True)
