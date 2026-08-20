@@ -17,8 +17,7 @@ llm_model = ChatOllama(
     base_url="http://localhost:11434",
     model="qwen2.5:1.5b",
     temperature=0.0,
-    num_ctx=2048,
-    num_gpu=99
+    num_ctx=2048
 )
 
 embeddings_model = OllamaEmbeddings(
@@ -85,11 +84,16 @@ def formatar_documentos(docs):
 
 template = """Você é um assistente técnico especializado nos Procedimentos Operacionais Padrão (POPs) do Hospital Rio Grande.
 Responda APENAS com base no contexto fornecido. Caso não encontre a resposta, responda apenas com 'Esta informação não conta nos POPs'.
+Divida a resposta em tópicos, como um passo a passo, sempre cite a fonte principal da resposta e adicione uma quebra de linha ao final.
 
 --- EXEMPLO ---
 Contexto: [Fonte: POP.TI.001] Para resetar a senha, acesse o painel e clique em 'Esqueci Senha'
 Pergunta: Como altero minha senha?
-Resposta: Acesse o painel e selecione 'Esqueci Senha'. [Fonte: POP.TI.001]
+Resposta: 
+Para resetar a senha, execute os seguintes passos:
+1. Acesse o painel 
+2. selecione 'Esqueci Senha'. 
+[Fonte: POP.TI.001] \n
 ---------------
 
 Contexto:
