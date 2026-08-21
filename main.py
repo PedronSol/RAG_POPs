@@ -1,17 +1,18 @@
-import os
-from typing import List
+from typing import List, Dict
 from pathlib import Path
+from operator import itemgetter
 
-from langchain_community.document_loaders import DirectoryLoader, Docx2txtLoader
+from langchain_community.document_loaders import Docx2txtLoader
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
-from langchain_core.runnables import RunnablePassthrough
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.documents import Document
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
 CAMINHO_CHROMA = "./chroma_pops_db"
 NOME_COLECAO = "pops_hospital"
@@ -29,13 +30,17 @@ embeddings_model = OllamaEmbeddings(
     num_ctx=2048
 )
 
-arquivos = DirectoryLoader(
-    path="Arquivos_POPs",
-    glob="**/*.docx",
-    loader_cls=Docx2txtLoader
-)
+def carregar_documentos(pasta: str) -> List[Document]:
+  caminho = Path(pasta)
+  documentos = []
+  for arq in caminho.glob("**/*.docx"):
+    docs = Docx2txtLoader(str(arq)).load()
+    for d in docs:
+      d.metadata["source"] = arq.name
+    documentos.extend(docs)
+  return documentos
 
-documentos = arquivos.load()
+documentos = carregar_documentos("Arquivos_POPs")
 
 def obter_criar_CHROMA(
     chunks: List[Document],
@@ -90,57 +95,84 @@ hybrid_retriever = EnsembleRetriever(
     weights=[0.5, 0.5]
 )
 
-def formatar_documentos(docs):
-  formatted = []
-  for doc in docs:
-    origem = doc.metadata.get("source", "Documento não identificado")
-    formatted.append(f"[Fonte: {origem}]\n{doc.page_content}")
-  return "\n\n---\n\n".join(formatted)
+def formatar_documentos(docs: List[Document]) -> str:
+  
+  if not docs:
+    return "Nenhum documento encontrado"
+
+  fontes_unicas = list(dict.fromkeys(d.metadata.get("source", "Desconhecido") for d in docs))
+
+  cabecalho_fontes = f"Arquivos encontrados ({len(fontes_unicas)}):\n" + "\n".join(f"- {f}" for f in fontes_unicas)
+
+  conteudo = "\n\n---\n\n".join(
+    f"[Fonte: {d.metadata.get('source')}]\n{d.page_content}" for d in docs
+  )
+
+  return f"{cabecalho_fontes}\n\nConteúdo detalhado:\n{conteudo}"
 
 template = """Você é um assistente técnico especializado nos Procedimentos Operacionais Padrão (POPs) do Hospital Rio Grande.
-Responda APENAS com base no contexto fornecido. Caso não encontre a resposta, responda apenas com 'Esta informação não conta nos POPs'.
-Divida a resposta em tópicos, como um passo a passo, e SEMPRE cite a fonte principal da resposta.
+Responda APENAS com base no contexto fornecido. Caso não encontre a resposta.
 
---- EXEMPLO ---
-Contexto: [Fonte: POP.TI.001] Para resetar a senha, acesse o painel e clique em 'Esqueci Senha'
-Pergunta: Como altero minha senha?
-Resposta: 
-Para resetar a senha, execute os seguintes passos:
-1. Acesse o painel 
-2. selecione 'Esqueci Senha'. 
-[Fonte: POP.TI.001]
----------------
+DIRETRIZES DE RESPOSTA:
+1. **Perguntas de Catálogo/Existência** (ex: "existem arquivos sobre X?", "quais POPs falam sobre Y?"):
+  - Verifique os "Arquivos encontrados" no contexto.
+  - Se houver arquivos, responda: "Encontrei X arquivo(s) sobre este tema: [liste os nomes dos arquivos]. Gostaria de detalhar algum procedimento específico?"
+  - Se não houver arquivos pertinentes, responda: "Não foram encontrados POPs sobre este tema."
+2. **Perguntas Procedimentais/Específicas** (ex: "como atualizar o sistema?", "o que fazer no erro X?"):
+  - Forneça o passo a passo direto baseado estritamente no conteúdo.
+  - Cite a [Fonte: Nome do Arquivo] ao final.
+3. Utilize o histórico da conversa para entender continuações (ex: se o usuário disser "sim, o primeiro", consulte o contexto e detalhe o arquivo citado anteriormente).
 
 Contexto:
 {context}
 
-Pergunta:
-{question}
-
 Resposta:"""
 
-prompt = ChatPromptTemplate.from_template(template)
+prompt = ChatPromptTemplate.from_messages([
+  ("system", template),
+  MessagesPlaceholder(variable_name="chat_history"),
+  ("human", "{question}")
+])
 
 rag_chain = (
     {
-        "context": hybrid_retriever | formatar_documentos,
-        "question": RunnablePassthrough()
+        "context": itemgetter("question") | hybrid_retriever | formatar_documentos,
+        "question": itemgetter("question"),
+        "chat_history": itemgetter("chat_history")
     }
     | prompt
     | llm_model
     | StrOutputParser()
 )
 
+armazenamento_sessoes: Dict[str, InMemoryChatMessageHistory] = {}
+
+def obter_historico_sessao(session_id: str) -> InMemoryChatMessageHistory:
+  if session_id not in armazenamento_sessoes:
+    armazenamento_sessoes[session_id] = InMemoryChatMessageHistory()
+  return armazenamento_sessoes[session_id]
+
+conversational_rag_chain = RunnableWithMessageHistory(
+  rag_chain,
+  obter_historico_sessao,
+  input_messages_key="question",
+  history_messages_key="chat_history"
+)
+
+config_sessao = {"configurable": {"session_id": "usuario_ti_01"}}
+
 print("\nSeja bem vindo ao HR-GPT, o sistema de consultas aos manuais do Hospital Rio Grande!")
 
-pergunta = input("\nEscreva aqui a sua dúvida: ")
+pergunta = input("\nEscreva aqui a sua dúvida (ou Sair): ")
 
-while pergunta != "Sair":
+while pergunta.strip().lower() != "sair":
   print("\n")
 
-  for chunk in rag_chain.stream(pergunta):
-    print(chunk, end="", flush=True)
+  for chunk in conversational_rag_chain.stream(
+    {"question":pergunta},
+    config=config_sessao
+  ): print(chunk, end="", flush=True)
 
-  pergunta = input("\nEscreva aqui a sua dúvida: ")
+  pergunta = input("\nEscreva aqui a sua dúvida (ou Sair): ")
 
 print("\nEspero ter sido útil, até a próxima interação!")
