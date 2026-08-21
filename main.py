@@ -3,7 +3,7 @@ from typing import List
 from pathlib import Path
 
 from langchain_community.document_loaders import DirectoryLoader, Docx2txtLoader
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -13,16 +13,20 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.documents import Document
 
+CAMINHO_CHROMA = "./chroma_pops_db"
+NOME_COLECAO = "pops_hospital"
+
 llm_model = ChatOllama(
     base_url="http://localhost:11434",
-    model="qwen2.5:1.5b",
+    model="qwen3:1.7b",
     temperature=0.0,
-    num_ctx=2048
+    num_ctx=4096
 )
 
 embeddings_model = OllamaEmbeddings(
     model="bge-m3",
-    base_url="http://localhost:11434"
+    base_url="http://localhost:11434",
+    num_ctx=2048
 )
 
 arquivos = DirectoryLoader(
@@ -33,24 +37,34 @@ arquivos = DirectoryLoader(
 
 documentos = arquivos.load()
 
-def obter_criar_FAISS(
+def obter_criar_CHROMA(
     chunks: List[Document],
     embeddings: OllamaEmbeddings,
-    caminho_indice: str = ".faiss_pop_ollama",
+    persist_dir: str = CAMINHO_CHROMA,
+    collection_name: str = NOME_COLECAO,
     forcar_reindexacao: bool = False
-) -> FAISS:
-  index_path = Path(caminho_indice)
-
-  if index_path.exists() and not forcar_reindexacao:
-    return FAISS.load_local(
-      folder_path=caminho_indice,
-      embeddings=embeddings,
-      allow_dangerous_deserialization=True
+) -> Chroma:
+    vector_store = Chroma(
+        collection_name=collection_name,
+        embedding_function=embeddings,
+        persist_directory=persist_dir,
+        collection_metadata={"hnsw:space": "cosine"}
     )
 
-  vector_store = FAISS.from_documents(chunks, embeddings)
-  vector_store.save_local(caminho_indice)
-  return vector_store
+    if forcar_reindexacao:
+        vector_store.delete_collection()
+        vector_store = Chroma(
+            collection_name=collection_name,
+            embedding_function=embeddings,
+            persist_directory=persist_dir,
+            collection_metadata={"hnsw:space": "cosine"}
+        )
+
+    quantidade_docs = vector_store._collection.count()
+
+    if not(quantidade_docs > 0 and not forcar_reindexacao): vector_store.add_documents(chunks)
+
+    return vector_store
 
 chunks = RecursiveCharacterTextSplitter(
   chunk_size=800,
@@ -58,10 +72,11 @@ chunks = RecursiveCharacterTextSplitter(
   separators=["\n\n", "\n", " ", ""]
 ).split_documents(documentos)
 
-vector_store = obter_criar_FAISS(
+vector_store = obter_criar_CHROMA(
   chunks = chunks,
   embeddings = embeddings_model,
-  caminho_indice="./faiss_pops_ollama",
+  persist_dir = CAMINHO_CHROMA,
+  collection_name = NOME_COLECAO,
   forcar_reindexacao=False
 )
 
@@ -84,7 +99,7 @@ def formatar_documentos(docs):
 
 template = """Você é um assistente técnico especializado nos Procedimentos Operacionais Padrão (POPs) do Hospital Rio Grande.
 Responda APENAS com base no contexto fornecido. Caso não encontre a resposta, responda apenas com 'Esta informação não conta nos POPs'.
-Divida a resposta em tópicos, como um passo a passo, sempre cite a fonte principal da resposta e adicione uma quebra de linha ao final.
+Divida a resposta em tópicos, como um passo a passo, e SEMPRE cite a fonte principal da resposta.
 
 --- EXEMPLO ---
 Contexto: [Fonte: POP.TI.001] Para resetar a senha, acesse o painel e clique em 'Esqueci Senha'
@@ -93,7 +108,7 @@ Resposta:
 Para resetar a senha, execute os seguintes passos:
 1. Acesse o painel 
 2. selecione 'Esqueci Senha'. 
-[Fonte: POP.TI.001] \n
+[Fonte: POP.TI.001]
 ---------------
 
 Contexto:
@@ -116,5 +131,16 @@ rag_chain = (
     | StrOutputParser()
 )
 
-for chunk in rag_chain.stream("Estou com uma mensagem de erro em vermelho no eSocial ao tentar acessar o Fortes AC. O que fazer?"):
-  print(chunk, end="", flush=True)
+print("\nSeja bem vindo ao HR-GPT, o sistema de consultas aos manuais do Hospital Rio Grande!")
+
+pergunta = input("\nEscreva aqui a sua dúvida: ")
+
+while pergunta != "Sair":
+  print("\n")
+
+  for chunk in rag_chain.stream(pergunta):
+    print(chunk, end="", flush=True)
+
+  pergunta = input("\nEscreva aqui a sua dúvida: ")
+
+print("\nEspero ter sido útil, até a próxima interação!")

@@ -2,7 +2,7 @@ langchain
 langchain-community
 langchain-openai
 langchain-ollama
-faiss-cpu
+chromadb
 docx2txt
 rank-bm25
 langchain-classic

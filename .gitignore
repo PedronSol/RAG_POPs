@@ -218,5 +218,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 Arquivos_POPs
+chroma_pops_db
 faiss_pops_ollama
 .env
